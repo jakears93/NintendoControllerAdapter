@@ -16,7 +16,6 @@ delay_x.h
 
 /*
 TODO Find better way to probe for controllers. In current implementation controllers will not be connected if the 'A' button is held down during read sequence.
-TODO Setup function to read n64 controller data
 TODO Implement timers in main loop and n64 data reads to accurately read signals and send reports at equal intervals
 */
 
@@ -35,20 +34,57 @@ TODO Implement timers in main loop and n64 data reads to accurately read signals
 #define LATCH_PIN 5	//Common controller latch signal pin
 #define CLOCK_PIN 6	//Common controller clock signal pin
 #define RESET_PIN 0	//Reset flag pin
+#define SIZE_OF_N64_SIGNAL 32 //Number of bits in the N64 data response
 
 //Setup global variables
 bool BOOTUP = 1;	 	//Bootup flag
 bool RESET = 0;			//Reset flag
 byte ACTIVE_CONTROLLERS = 0x00;	//Bits 1-3 describe active status of NES/SNES/N64 controllers
-bool N64InputSignal[32] = {0};      //N64 controller data
+bool N64InputSignal[SIZE_OF_N64_SIGNAL] = {0};      //N64 controller data
   
 //Declare 3 joystick objects
 Joystick_ nesCtrl(0x03, JOYSTICK_TYPE_GAMEPAD, BC_NES, 0, false, false, false, false, false, false, false, false, false, false, false);
 Joystick_ snesCtrl(0x03, JOYSTICK_TYPE_GAMEPAD, BC_SNES, 0, false, false, false, false, false, false, false, false, false, false, false);
-Joystick_ n64Ctrl(0x03, JOYSTICK_TYPE_GAMEPAD, BC_N64, 0, true, true, false, false, false, false, false, false, false, false, false);
+Joystick_ n64Ctrl(0x03, JOYSTICK_TYPE_MULTI_AXIS, BC_N64, 0, true, true, false, false, false, false, false, false, false, false, false);
+
+//Define functions
+byte bitsToByte(bool bits[SIZE_OF_N64_SIGNAL], int index)
+{
+  byte value = 0x00;
+  int COUNT = 0;
+  for(COUNT; COUNT<8; COUNT++)
+  {
+    if(bits[index])
+    {
+      bitSet(value, COUNT);
+    }
+    index++;
+  }
+  return value*4;   // Scaled x4 for because joystick library range is set to 10bit resolution
+}
+
+void N64_SIGNAL_HIGH() __attribute__((always_inline));
+void N64_SIGNAL_HIGH()
+{
+ _delay_us(1);          //Hold data low for 1 microseconds   
+ PORTD ^= B00000100;    //Toggle N64 data high
+ _delay_us(3);          //Hold data high for 3 microseconds
+ PORTD ^= B00000100;    //Toggle N64 data low
+}
+
+void N64_SIGNAL_LOW() __attribute__((always_inline));
+void N64_SIGNAL_LOW()
+{
+ _delay_us(3);          //Hold data low for 3 microseconds   
+ PORTD ^= B00000100;    //Toggle N64 data high
+ _delay_us(1);          //Hold data high for 1 microseconds
+ PORTD ^= B00000100;    //Toggle N64 data low
+}
 
 void connectControllers(void)
 {
+//Initialize variable to store response from N64 controller
+  bool response = 0;
 //Pulse the latch pin on each controller and listen for response
 //Upon response, set active controller bits and initialize joysticks accordingly
 	digitalWrite(LATCH_PIN, 1);
@@ -63,7 +99,25 @@ void connectControllers(void)
 		bitSet(ACTIVE_CONTROLLERS, 2);
 		snesCtrl.begin(0);
 	}
-	if (digitalRead(DATA_N64_PIN))		//Fully functional, no changes needed
+ 
+   // Send intial polling sequence of 9 bits to N64 Controller(0b000000011)
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_LOW(); 
+  N64_SIGNAL_HIGH();
+  N64_SIGNAL_HIGH();
+
+  DDRD ^= B00000100;      //Toggles N64 data pin to input via direction register
+
+  //changed to 0us to account for time to of toggling pins (toggles 2 times per signal, x 9 signals = 18 + 1 to toggle to input = 19 clock cycles or 19/16 us)
+  _delay_us(3);
+  response = (PORTD & B00000100);   // Reads and stores only N64 data pin value by using logical AND expression
+  DDRD ^= B00000100;      //Toggles N64 data pin to output via direction register
+	if (response)		
 	{
 		bitSet(ACTIVE_CONTROLLERS, 3);
 		n64Ctrl.begin(0);
@@ -152,25 +206,6 @@ void snesRead(bool FLAG)
 	snesCtrl.sendState();
 }
 
-void N64_SIGNAL_HIGH() __attribute__((always_inline));
-void N64_SIGNAL_HIGH()
-{
- _delay_us(1);          //Hold data low for 1 microseconds   
- PORTD ^= B00000100;    //Toggle N64 data high
- _delay_us(3);          //Hold data high for 3 microseconds
- PORTD ^= B00000100;    //Toggle N64 data low
-}
-
-void N64_SIGNAL_LOW() __attribute__((always_inline));
-void N64_SIGNAL_LOW()
-{
- _delay_us(3);          //Hold data low for 3 microseconds   
- PORTD ^= B00000100;    //Toggle N64 data high
- _delay_us(1);          //Hold data high for 1 microseconds
- PORTD ^= B00000100;    //Toggle N64 data low
-}
-
-
 void n64Read(bool FLAG)
 {
 // If flag is true, controller is inactive and will exit
@@ -179,7 +214,7 @@ void n64Read(bool FLAG)
 
   // Reset controller data  
   int COUNT = 0;
-  for(COUNT; COUNT<32; COUNT++)
+  for(COUNT; COUNT<SIZE_OF_N64_SIGNAL; COUNT++)
   {
        N64InputSignal[COUNT] = 0; 
   }
@@ -287,12 +322,15 @@ void n64Read(bool FLAG)
     }
   }
   // Update joystick status if change has occured
-  //TODO
-  
+  xAxis = bitsToByte(N64InputSignal, 16);   //bits 16-23
+  yAxis = bitsToByte(N64InputSignal, 24);   //bits 24-31
+  n64Ctrl.setXAxis(xAxis);
+  n64Ctrl.setYAxis(yAxis);
 // Send gamepad report
 	n64Ctrl.sendState();
 }
 
+//Setup Entry Point
 void setup() 
 {
 //Initialize gpio pin modes
@@ -310,11 +348,12 @@ void setup()
     }
     
 // Refresh connection to controllers
-   	disconnectControllers();
+  disconnectControllers();
 	connectControllers();
 
 }
 
+// Main Loop
 void loop()
 {
 // If reset flag is set, turn flag off and run setup again
