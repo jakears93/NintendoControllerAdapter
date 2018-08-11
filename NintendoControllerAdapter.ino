@@ -19,8 +19,8 @@
 bool nesData[NES_BC];
 bool snesData[SNES_BC];
 int n64Data[N64_DATA_SIZE];
-int previousNesData[NES_BC];
-int previousSnesData[SNES_BC];
+bool previousNesData[NES_BC];
+bool previousSnesData[SNES_BC];
 int previousN64Data[N64_DATA_SIZE];
 byte ACTIVE_CONTROLLERS = 0x00;
 
